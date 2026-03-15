@@ -12,7 +12,6 @@ BUSYBOX_VERSION=1_33_1
 FINDER_APP_DIR=$(realpath $(dirname $0))
 ARCH=arm64
 CROSS_COMPILE=aarch64-none-linux-gnu-
-WRITER_APP_DIR=/data/dev/learning/embedded-linux/aesd/assignments/aesd-assignment3-3mad10/finder-app
 TOOLCHAIN_DYN_LIB_PATH=$(${CROSS_COMPILE}gcc -print-sysroot)
 
 if [ $# -lt 1 ]
@@ -98,16 +97,16 @@ sudo mknod -m 666 dev/null c 1 3
 sudo mknod -m 666 dev/console c 5 1
 
 # TODO: Clean and build the writer utility
-cd ${WRITER_APP_DIR}
+cd ${FINDER_APP_DIR}
 make clean
 make writer CROSS_COMPILE=${CROSS_COMPILE}
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
-cp ${WRITER_APP_DIR}/writer ${OUTDIR}/rootfs/home
-cp ${WRITER_APP_DIR}/finder.sh ${WRITER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home
+cp ${FINDER_APP_DIR}/writer ${OUTDIR}/rootfs/home
+cp ${FINDER_APP_DIR}/finder.sh ${FINDER_APP_DIR}/finder-test.sh ${OUTDIR}/rootfs/home
 mkdir -p ${OUTDIR}/rootfs/home/conf
-cp ${WRITER_APP_DIR}/conf/assignment.txt ${WRITER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf
+cp ${FINDER_APP_DIR}/conf/assignment.txt ${FINDER_APP_DIR}/conf/username.txt ${OUTDIR}/rootfs/home/conf
 cp autorun-qemu.sh ${OUTDIR}/rootfs/home
 sed -i 's/..\/conf\/assignment.txt/conf\/assignment.txt/' ${OUTDIR}/rootfs/home/finder-test.sh
 
