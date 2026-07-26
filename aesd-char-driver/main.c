@@ -26,6 +26,16 @@ MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
 
+struct file_operations aesd_fops = {
+    .owner =    THIS_MODULE,
+    .read =     aesd_read,
+    .write =    aesd_write,
+    .open =     aesd_open,
+    .release =  aesd_release,
+    .unlocked_ioctl =   aesd_ioctl,
+    .llseek =   aesd_llseek,
+};
+
 
 static bool has_newline(const char *buffer, size_t length) {
     const char *ptr = buffer;
@@ -179,13 +189,34 @@ out:
     mutex_unlock(&dev->lock);
     return retval;
 }
-struct file_operations aesd_fops = {
-    .owner =    THIS_MODULE,
-    .read =     aesd_read,
-    .write =    aesd_write,
-    .open =     aesd_open,
-    .release =  aesd_release,
-};
+
+loff_t aesd_llseek(struct file * filp, loff_t off, int whence)
+{
+    struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+    loff_t newpos;
+
+    switch(whence) {
+        case 0: /* SEEK_SET */
+            newpos = off;
+            break;
+        case 1: /* SEEK_CUR */
+            newpos = filp->f_pos + off;
+            break;
+        case 2: /* SEEK_END */
+            newpos = dev->buffer.in_offs + off; // TODO: Comp[lete]
+            break;
+        default: /* can't happen */
+            return -EINVAL;
+        }
+    if (newpos < 0) return -EINVAL;
+    filp->f_pos = newpos;
+    return newpos;
+}
+
+long aesd_ioctl(struct file * filp, unsigned int cmd, unsigned long arg)
+{
+    return 0;
+}
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
 {
