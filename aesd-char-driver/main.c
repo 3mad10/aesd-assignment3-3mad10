@@ -184,32 +184,48 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     }
 
     retval = count;
+    *f_pos += retval; 
 
 out:
     mutex_unlock(&dev->lock);
     return retval;
 }
 
+loff_t get_buffer_size(struct aesd_circular_buffer* buffer)
+{
+    loff_t buffer_size = 0;
+
+    for (int i = 0; i < AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED; i++)
+    {
+        
+        if(buffer->entry[i].buffptr != NULL)
+        {
+            buffer_size += buffer->entry[i].size;
+        }
+        
+    }
+    return buffer_size;
+}
+
 loff_t aesd_llseek(struct file * filp, loff_t off, int whence)
 {
     struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
     loff_t newpos;
-
-    switch(whence) {
-        case 0: /* SEEK_SET */
-            newpos = off;
-            break;
-        case 1: /* SEEK_CUR */
-            newpos = filp->f_pos + off;
-            break;
-        case 2: /* SEEK_END */
-            newpos = dev->buffer.in_offs + off; // TODO: Comp[lete]
-            break;
-        default: /* can't happen */
-            return -EINVAL;
+    loff_t buffer_size;
+    buffer_size = get_buffer_size(&dev->buffer);
+    
+    newpos = fixed_size_llseek(filp, off, whence, buffer_size);
+    if (newpos >= 0)
+    {
+        if (mutex_lock_interruptible(&dev->lock))
+        {
+            return -ERESTARTSYS;
         }
-    if (newpos < 0) return -EINVAL;
-    filp->f_pos = newpos;
+        filp->f_pos = newpos;
+        dev->buffer.in_offs = newpos;
+        dev->buffer.out_offs = newpos;
+        mutex_unlock(&dev->lock);
+    }
     return newpos;
 }
 
