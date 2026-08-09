@@ -18,6 +18,8 @@
 #include <linux/cdev.h>
 #include <linux/fs.h> // file_operations
 #include "aesdchar.h"
+#include "aesd_ioctl.h"
+
 int aesd_major =   0; // use dynamic major
 int aesd_minor =   0;
 
@@ -222,16 +224,118 @@ loff_t aesd_llseek(struct file * filp, loff_t off, int whence)
             return -ERESTARTSYS;
         }
         filp->f_pos = newpos;
-        dev->buffer.in_offs = newpos;
+        // dev->buffer.in_offs = newpos + 1;
         dev->buffer.out_offs = newpos;
         mutex_unlock(&dev->lock);
     }
     return newpos;
 }
 
+uint32_t get_command_offset(uint32_t b, uint32_t e,
+    uint32_t cmd_offset, bool buffer_full)
+{
+    uint32_t current_off;
+    if(buffer_full)
+    {
+        while(b < e)
+        {
+            current_off++;
+            b++;
+            if(current_off == cmd_offset)
+            {
+                return b;
+            }
+        }
+    }
+    else
+    {
+        while(e < b)
+        {
+            current_off++;
+            e = (e + 1)%AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+            if(current_off == cmd_offset)
+            {
+                return e;
+            }
+        }
+    }
+    return -1;
+}
+
+uint32_t get_offset_inside_command(struct aesd_buffer_entry* entry, uint32_t targer_offset)
+{
+    uint32_t i = 0;
+    while(i < entry->size)
+    {
+        if(targer_offset == i)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+loff_t get_offset(struct aesd_circular_buffer* buffer, 
+    uint32_t cmd_offset, 
+    uint32_t inside_cmd_offset)
+{
+    loff_t offset = -1;
+    uint32_t local_offset;
+    uint32_t b = buffer->out_offs;
+    uint32_t e = buffer->in_offs;
+    struct aesd_buffer_entry entry;
+
+    local_offset = get_command_offset(b, e, cmd_offset, buffer->full);
+    if (local_offset > -1)
+    {
+        entry = buffer->entry[local_offset];
+        local_offset += get_offset_inside_command(&entry, inside_cmd_offset);
+        offset = local_offset;
+    }
+
+    return offset;
+}
+
 long aesd_ioctl(struct file * filp, unsigned int cmd, unsigned long arg)
 {
-    return 0;
+    long ret = 0;
+    struct aesd_seekto kernal_seek_arg;
+    struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
+    loff_t buffer_size;
+    buffer_size = get_buffer_size(&dev->buffer);
+
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+	if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+    switch (cmd)
+    {
+    case AESDCHAR_IOCSEEKTO:
+        if(copy_from_user(&kernal_seek_arg, (struct aesd_seekto *)arg, sizeof(struct aesd_seekto)))
+        {
+            return -EFAULT;
+        }
+        if (ret != -EFAULT)
+        {
+            loff_t offset;
+            uint32_t write_cmd_offset = kernal_seek_arg.write_cmd;
+            uint32_t write_cmd_inside_offset = kernal_seek_arg.write_cmd_offset;
+            if (buffer_size < (write_cmd_offset + write_cmd_inside_offset)) return -EINVAL;
+            offset = get_offset(&dev->buffer, write_cmd_offset, write_cmd_inside_offset);
+            if (offset >= 0)
+            {
+                ret = aesd_llseek(filp, offset, SEEK_SET);
+            }
+            else
+            {
+                return -EINVAL;
+            }
+        }
+        break;
+    
+    default:
+        ret = -ENOTTY;
+        break;
+    }
+    return ret;
 }
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
