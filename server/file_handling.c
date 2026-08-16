@@ -1,5 +1,6 @@
 #include "file_handling.h"
 #include <string.h>
+#include <stdio.h>
 void write_to_file(int fd, const char* buf, int len) {
     int ret;
     printf("Writing to fd = %d\n", fd);

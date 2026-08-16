@@ -13,10 +13,11 @@
 #include <fcntl.h>
 #include "stdbool.h"
 #include <string.h>
-
+#include <sys/ioctl.h>
 #include "server_cfg.h"
 #include "file_handling.h"
 #include "types.h"
+#include "aesd_ioctl.h"
 
 int setup_socket(int port, int sock_type);
 int wait_for_connection(int sfd, char* client_addr, int addr_len);

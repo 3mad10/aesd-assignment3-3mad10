@@ -35,6 +35,7 @@ struct file_operations aesd_fops = {
     .open =     aesd_open,
     .release =  aesd_release,
     .unlocked_ioctl =   aesd_ioctl,
+    .compat_ioctl = compat_ptr_ioctl,
     .llseek =   aesd_llseek,
 };
 
@@ -224,75 +225,91 @@ loff_t aesd_llseek(struct file * filp, loff_t off, int whence)
             return -ERESTARTSYS;
         }
         filp->f_pos = newpos;
-        // dev->buffer.in_offs = newpos + 1;
-        dev->buffer.out_offs = newpos;
         mutex_unlock(&dev->lock);
     }
     return newpos;
 }
 
-uint32_t get_command_offset(uint32_t b, uint32_t e,
-    uint32_t cmd_offset, bool buffer_full)
-{
-    uint32_t current_off;
-    if(buffer_full)
-    {
-        while(b < e)
-        {
-            current_off++;
-            b++;
-            if(current_off == cmd_offset)
-            {
-                return b;
-            }
-        }
-    }
-    else
-    {
-        while(e < b)
-        {
-            current_off++;
-            e = (e + 1)%AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
-            if(current_off == cmd_offset)
-            {
-                return e;
-            }
-        }
-    }
-    return -1;
-}
+// uint32_t get_command_offset(uint32_t b, uint32_t e,
+//     uint32_t cmd_offset, bool buffer_full)
+// {
+//     uint32_t current_off;
+//     if(buffer_full)
+//     {
+//         while(b < e)
+//         {
+//             current_off++;
+//             b++;
+//             if(current_off == cmd_offset)
+//             {
+//                 return b;
+//             }
+//         }
+//     }
+//     else
+//     {
+//         while(e < b)
+//         {
+//             current_off++;
+//             e = (e + 1)%AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+//             if(current_off == cmd_offset)
+//             {
+//                 return e;
+//             }
+//         }
+//     }
+//     return -1;
+// }
 
-uint32_t get_offset_inside_command(struct aesd_buffer_entry* entry, uint32_t targer_offset)
-{
-    uint32_t i = 0;
-    while(i < entry->size)
-    {
-        if(targer_offset == i)
-        {
-            return i;
-        }
-    }
-    return -1;
-}
+// uint32_t get_offset_inside_command(struct aesd_buffer_entry* entry, uint32_t targer_offset)
+// {
+//     uint32_t i = 0;
+//     while(i < entry->size)
+//     {
+//         if(targer_offset == i)
+//         {
+//             return i;
+//         }
+//         i++;
+//     }
+//     return -1;
+// }
 
 loff_t get_offset(struct aesd_circular_buffer* buffer, 
-    uint32_t cmd_offset, 
-    uint32_t inside_cmd_offset)
+        uint32_t cmd_offset, 
+        uint32_t inside_cmd_offset)
 {
-    loff_t offset = -1;
-    uint32_t local_offset;
-    uint32_t b = buffer->out_offs;
-    uint32_t e = buffer->in_offs;
-    struct aesd_buffer_entry entry;
-
-    local_offset = get_command_offset(b, e, cmd_offset, buffer->full);
-    if (local_offset > -1)
-    {
-        entry = buffer->entry[local_offset];
-        local_offset += get_offset_inside_command(&entry, inside_cmd_offset);
-        offset = local_offset;
+    loff_t offset = 0;
+    uint32_t i;
+    struct aesd_buffer_entry *entry;
+    uint32_t curr_idx = buffer->out_offs;
+    
+    if (cmd_offset >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED) {
+        return -EINVAL;
     }
-
+    
+    // 1. Sum up the sizes of all commands up to cmd_offset
+    for (i = 0; i < cmd_offset; i++) {
+        entry = &buffer->entry[curr_idx];
+        
+        // If the entry hasn't been written to, the command offset is invalid
+        if (entry->buffptr == NULL) {
+            return -EINVAL; 
+        }
+        
+        offset += entry->size; // Accumulate byte sizes
+        curr_idx = (curr_idx + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+    }
+    
+    // 2. We are now at our target command. Check if it's valid
+    entry = &buffer->entry[curr_idx];
+    if (entry->buffptr == NULL || inside_cmd_offset >= entry->size) {
+        return -EINVAL; // Invalid command, or offset is larger than this command
+    }
+    
+    // 3. Add the offset inside the target command
+    offset += inside_cmd_offset;
+    
     return offset;
 }
 
@@ -303,12 +320,15 @@ long aesd_ioctl(struct file * filp, unsigned int cmd, unsigned long arg)
     struct aesd_dev* dev = (struct aesd_dev*) filp->private_data;
     loff_t buffer_size;
     buffer_size = get_buffer_size(&dev->buffer);
-
+    printk(KERN_INFO "In IOCTL \n");
     if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC) return -ENOTTY;
+    printk(KERN_INFO "Passed check _IOC_TYPE(cmd) != AESD_IOC_MAGIC\n");
 	if (_IOC_NR(cmd) > AESDCHAR_IOC_MAXNR) return -ENOTTY;
+    printk(KERN_INFO "Passed _IOC_NR(cmd) > AESDCHAR_IOC_MAXNR\n");
     switch (cmd)
     {
     case AESDCHAR_IOCSEEKTO:
+        printk(KERN_INFO "In AESDCHAR_IOCSEEKTO\n");
         if(copy_from_user(&kernal_seek_arg, (struct aesd_seekto *)arg, sizeof(struct aesd_seekto)))
         {
             return -EFAULT;
@@ -318,11 +338,20 @@ long aesd_ioctl(struct file * filp, unsigned int cmd, unsigned long arg)
             loff_t offset;
             uint32_t write_cmd_offset = kernal_seek_arg.write_cmd;
             uint32_t write_cmd_inside_offset = kernal_seek_arg.write_cmd_offset;
-            if (buffer_size < (write_cmd_offset + write_cmd_inside_offset)) return -EINVAL;
+            printk(KERN_INFO "write_cmd_offset = %u\n", write_cmd_offset);
+            printk(KERN_INFO "write_cmd_inside_offset = %u\n", write_cmd_inside_offset);
+            
+            if (mutex_lock_interruptible(&dev->lock)) {
+                return -ERESTARTSYS;
+            }
             offset = get_offset(&dev->buffer, write_cmd_offset, write_cmd_inside_offset);
+            mutex_unlock(&dev->lock);
+            
+            printk(KERN_INFO "offset = %lld\n", offset);
             if (offset >= 0)
             {
                 ret = aesd_llseek(filp, offset, SEEK_SET);
+                if (ret >= 0) ret = 0;
             }
             else
             {

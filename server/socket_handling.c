@@ -1,9 +1,10 @@
 #include "socket_handling.h"
 
 static void *get_in_addr(struct sockaddr *sa);
-static int send_received_data(int cfd);
+static int send_received_data(int cfd, bool is_ioctl, struct aesd_seekto *seekto);
 static int save_received_data(const char* recv_buff, int n);
 static void send_chunk(int cfd, const char* buf, int len); 
+bool is_ioctl_cmd(char* recv_buff, unsigned int* write_cmd, unsigned int* write_cmd_off);
 
 int setup_socket(int port, int sock_type) {
     int err;
@@ -76,6 +77,15 @@ int wait_for_connection(int sfd, char* client_addr, int addr_len) {
     return cfd;
 }
 
+bool is_ioctl_cmd(char* recv_buff, unsigned int* write_cmd, unsigned int* write_cmd_off)
+{
+    if(sscanf(recv_buff, "AESDCHAR_IOCSEEKTO:%u,%u", write_cmd, write_cmd_off) == 2)
+    {
+        return true;
+    } else {
+        return false;
+    }
+}
 
 int echo_conn(struct job_data* job_data) {
     int n;
@@ -84,6 +94,9 @@ int echo_conn(struct job_data* job_data) {
     long unsigned int capacity = RCV_CHUNK_SIZE;
     int cfd = job_data->cfd;
     int ret;
+    unsigned int write_cmd;
+    unsigned int write_cmd_offset;
+    struct aesd_seekto ioctl_cmd;
     DEBUG_LOG("allocated buffer with size %zu", capacity);
     if (recv_buff == NULL) return -1;
 
@@ -97,15 +110,28 @@ int echo_conn(struct job_data* job_data) {
         total_size += n;
         if (memchr(&recv_buff[total_size - n], '\n', n) != NULL) {
             DEBUG_LOG("saving recv_buff byte[0] = %c to byte[%ld] = %c", recv_buff[0], total_size, recv_buff[total_size - 2]);
-            pthread_mutex_lock(job_data->mutex);
-            ret = save_received_data((char*)&recv_buff[0], total_size);
-            pthread_mutex_unlock(job_data->mutex);
+            bool is_ioctl = false;
+            if(is_ioctl_cmd(&recv_buff[0], &write_cmd, &write_cmd_offset) == true)
+            {
+                is_ioctl = true;
+                ioctl_cmd.write_cmd = write_cmd;
+                ioctl_cmd.write_cmd_offset = write_cmd_offset;
+                DEBUG_LOG("IOCTL Command send with write_cmd = %u and write_cmd_offset = %u", write_cmd, write_cmd_offset);
+                ret = 0;
+            }
+            else
+            {
+                pthread_mutex_lock(job_data->mutex);
+                ret = save_received_data((char*)&recv_buff[0], total_size);
+                pthread_mutex_unlock(job_data->mutex);
+            }
+
             if(ret == -1) {
                 n = -1;
                 break;
             }
             pthread_mutex_lock(job_data->mutex);
-            send_received_data(cfd);
+            send_received_data(cfd, is_ioctl, &ioctl_cmd);
             pthread_mutex_unlock(job_data->mutex);
             total_size = 0;
         }
@@ -139,12 +165,21 @@ void *get_in_addr(struct sockaddr *sa)
     }
 }
 
-int send_received_data(int cfd) {
+int send_received_data(int cfd, bool is_ioctl, struct aesd_seekto *seekto) {
     int n;
     int fd;
     char transmit_buff[TRN_BUFF_SIZE];
     DEBUG_LOG("Sending data to client");
     fd = open(RECEIVED_SOCKET_DATA_PATH, O_RDONLY);
+    if (fd < 0) return -1;
+    if (is_ioctl && seekto != NULL) {
+        if (ioctl(fd, AESDCHAR_IOCSEEKTO, seekto) < 0) {
+            syslog(LOG_ERR, "ioctl failed: %s", strerror(errno));
+            DEBUG_LOG("IOCTL Failed with error %s", strerror(errno));
+        } else {
+            DEBUG_LOG("IOCTL Called");
+        }
+    }
     while ((n = read (fd, &transmit_buff[0], sizeof(transmit_buff))) > 0) {
         DEBUG_LOG("n = %d" , n);
         DEBUG_LOG("char[0] = %c , char[n-2] = %c" , transmit_buff[0], transmit_buff[n-2]);
